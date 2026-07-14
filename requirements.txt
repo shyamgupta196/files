@@ -1,0 +1,7 @@
+numpy
+scipy
+pandas
+matplotlib
+bayesflow>=2.0
+keras>=3.0
+tensorflow  # or torch / jax -- pick whichever keras backend you prefer for BayesFlow 2.x
