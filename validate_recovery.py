@@ -25,6 +25,28 @@ import matplotlib.pyplot as plt
 from rdm_dr_simulator import PARAM_NAMES, sample_prior, simulate_batch
 
 
+def _normalize_theta(theta):
+    theta = np.asarray(theta)
+    if theta.ndim == 1:
+        theta = theta[:, None]
+    return theta
+
+
+def _normalize_posterior_samples(posterior_samples):
+    posterior_samples = np.asarray(posterior_samples)
+    if posterior_samples.ndim == 2:
+        posterior_samples = posterior_samples[:, :, None]
+    return posterior_samples
+
+
+def _param_labels(theta_true, posterior_samples):
+    n_params = min(theta_true.shape[1], posterior_samples.shape[2], len(PARAM_NAMES))
+    if n_params < len(PARAM_NAMES):
+        print(f"Warning: using {n_params} parameter dimension(s) for validation plots; "
+              f"expected {len(PARAM_NAMES)}.")
+    return PARAM_NAMES[:n_params]
+
+
 def generate_validation_set(n_datasets=200, n_obs=300, dt=0.005, t_max=2.5,
                              dr_window=0.25, seed=0):
     rng = np.random.default_rng(seed)
@@ -44,11 +66,19 @@ def get_posterior_samples(approximator, data, num_samples=1000):
 
     conditions = {"trials": data}
     samples_dict = approximator.sample(conditions=conditions, num_samples=num_samples)
-    # BayesFlow typically returns a dict with the inference_variables key;
-    # adjust the key name below if your adapter/approximator names it
-    # differently (check `samples_dict.keys()`).
-    key = "inference_variables" if "inference_variables" in samples_dict else list(samples_dict.keys())[0]
-    samples = np.asarray(samples_dict[key])  # (n_datasets, num_samples, n_params)
+    # BayesFlow inverts the adapter's `.concatenate(...)` transform on output,
+    # so `sample` returns ONE array per parameter (keyed by PARAM_NAMES), each
+    # of shape (n_datasets, num_samples, 1) -- NOT a single "inference_variables"
+    # array. Stack them back into (n_datasets, num_samples, n_params) in
+    # PARAM_NAMES order. (Older/other configs may return "inference_variables"
+    # directly; handle that too.)
+    if "inference_variables" in samples_dict:
+        samples = np.asarray(samples_dict["inference_variables"])
+    else:
+        n_datasets = data.shape[0]
+        cols = [np.asarray(samples_dict[name]).reshape(n_datasets, num_samples, -1)
+                for name in PARAM_NAMES]
+        samples = np.concatenate(cols, axis=-1)  # (n_datasets, num_samples, n_params)
     return samples
 
 
@@ -57,18 +87,23 @@ def get_posterior_samples(approximator, data, num_samples=1000):
 # ---------------------------------------------------------------------------
 
 def parameter_recovery(theta_true, posterior_samples, out_png="recovery.png"):
-    post_mean = posterior_samples.mean(axis=1)  # (n_datasets, n_params)
-    n_params = theta_true.shape[1]
+    theta_true = _normalize_theta(theta_true)
+    posterior_samples = _normalize_posterior_samples(posterior_samples)
+    labels = _param_labels(theta_true, posterior_samples)
 
-    rmse = np.sqrt(np.mean((post_mean - theta_true) ** 2, axis=0))
-    bias = np.mean(post_mean - theta_true, axis=0)
+    post_mean = posterior_samples.mean(axis=1)  # (n_datasets, n_params)
+    n_params = len(labels)
+
+    rmse = np.sqrt(np.mean((post_mean[:, :n_params] - theta_true[:, :n_params]) ** 2, axis=0))
+    bias = np.mean(post_mean[:, :n_params] - theta_true[:, :n_params], axis=0)
 
     print("Parameter recovery summary (posterior mean vs. true value):")
-    for i, name in enumerate(PARAM_NAMES):
+    for i, name in enumerate(labels):
         print(f"  {name:5s}  RMSE = {rmse[i]:.4f}   bias = {bias[i]:+.4f}")
 
     fig, axes = plt.subplots(1, n_params, figsize=(4 * n_params, 4))
-    for i, name in enumerate(PARAM_NAMES):
+    axes = np.atleast_1d(axes)
+    for i, name in enumerate(labels):
         ax = axes[i]
         lo = min(theta_true[:, i].min(), post_mean[:, i].min())
         hi = max(theta_true[:, i].max(), post_mean[:, i].max())
@@ -91,6 +126,8 @@ def sbc_ranks(theta_true, posterior_samples):
     """Rank of the true parameter value among the posterior samples, for
     each dataset and parameter. Under perfect calibration these ranks are
     Uniform(0, num_samples) (Talts et al., 2018)."""
+    theta_true = _normalize_theta(theta_true)
+    posterior_samples = _normalize_posterior_samples(posterior_samples)
     n_datasets, num_samples, n_params = posterior_samples.shape
     ranks = np.zeros((n_datasets, n_params), dtype=np.int64)
     for p in range(n_params):
@@ -99,17 +136,19 @@ def sbc_ranks(theta_true, posterior_samples):
 
 
 def sbc_plot(ranks, num_samples, out_png="sbc.png"):
+    ranks = np.asarray(ranks)
     n_params = ranks.shape[1]
     n_datasets = ranks.shape[0]
     n_bins = 20
     expected = n_datasets / n_bins
 
     fig, axes = plt.subplots(1, n_params, figsize=(4 * n_params, 3.5))
+    axes = np.atleast_1d(axes)
     for p in range(n_params):
         ax = axes[p]
         ax.hist(ranks[:, p], bins=n_bins, range=(0, num_samples), color="tab:blue", alpha=0.7)
         ax.axhline(expected, color="k", ls="--", lw=1)
-        ax.set_title(PARAM_NAMES[p])
+        ax.set_title(PARAM_NAMES[p] if p < len(PARAM_NAMES) else f"param_{p}")
         ax.set_xlabel("rank statistic")
         if p == 0:
             ax.set_ylabel("count")
@@ -124,11 +163,13 @@ def sbc_ecdf_plot(ranks, num_samples, out_png="sbc_ecdf.png"):
     ECDF of normalized ranks against the diagonal, with a simulated envelope
     (BayesFlow has bf.diagnostics.plots.calibration_ecdf for this -- this is
     a minimal from-scratch reimplementation in case that call fails)."""
+    ranks = np.asarray(ranks)
     n_params = ranks.shape[1]
     n_datasets = ranks.shape[0]
     normalized = ranks / num_samples  # in [0,1]
 
     fig, axes = plt.subplots(1, n_params, figsize=(4 * n_params, 3.5))
+    axes = np.atleast_1d(axes)
     x = np.linspace(0, 1, 200)
     for p in range(n_params):
         ax = axes[p]
@@ -136,7 +177,7 @@ def sbc_ecdf_plot(ranks, num_samples, out_png="sbc_ecdf.png"):
         ecdf = np.arange(1, n_datasets + 1) / n_datasets
         ax.plot(sorted_ranks, ecdf - x[np.searchsorted(x, sorted_ranks).clip(max=len(x)-1)], color="tab:blue")
         ax.axhline(0, color="k", ls="--", lw=1)
-        ax.set_title(PARAM_NAMES[p])
+        ax.set_title(PARAM_NAMES[p] if p < len(PARAM_NAMES) else f"param_{p}")
         ax.set_xlabel("normalized rank")
         if p == 0:
             ax.set_ylabel("ECDF - identity")
@@ -152,7 +193,10 @@ def sbc_ecdf_plot(ranks, num_samples, out_png="sbc_ecdf.png"):
 
 def coverage_analysis(theta_true, posterior_samples, levels=(0.5, 0.8, 0.9, 0.95),
                        out_png="coverage.png"):
+    theta_true = _normalize_theta(theta_true)
+    posterior_samples = _normalize_posterior_samples(posterior_samples)
     n_datasets, num_samples, n_params = posterior_samples.shape
+    labels = _param_labels(theta_true, posterior_samples)
     empirical = np.zeros((len(levels), n_params))
 
     for li, level in enumerate(levels):
@@ -165,12 +209,12 @@ def coverage_analysis(theta_true, posterior_samples, levels=(0.5, 0.8, 0.9, 0.95
 
     print("Coverage (nominal vs. empirical), per parameter:")
     for li, level in enumerate(levels):
-        row = "  ".join(f"{PARAM_NAMES[p]}={empirical[li, p]:.3f}" for p in range(n_params))
+        row = "  ".join(f"{labels[p]}={empirical[li, p]:.3f}" for p in range(n_params))
         print(f"  nominal {level:.2f}: {row}")
 
     fig, ax = plt.subplots(figsize=(6, 6))
     for p in range(n_params):
-        ax.plot(levels, empirical[:, p], "o-", label=PARAM_NAMES[p])
+        ax.plot(levels, empirical[:, p], "o-", label=labels[p])
     ax.plot([0, 1], [0, 1], "k--", lw=1, label="perfect calibration")
     ax.set_xlabel("nominal credible-interval level")
     ax.set_ylabel("empirical coverage")
@@ -196,5 +240,6 @@ def run_all(approximator, n_datasets=200, n_obs=300, num_posterior_samples=1000,
 
 if __name__ == "__main__":
     import bayesflow as bf
-    approximator = bf.Approximator.load("rdm_dr_approximator.keras")
+    import keras
+    approximator = keras.saving.load_model("rdm_dr_approximator1.keras")
     run_all(approximator)

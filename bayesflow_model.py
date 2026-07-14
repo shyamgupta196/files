@@ -168,14 +168,14 @@ def build_approximator(adapter=None):
 # ---------------------------------------------------------------------------
 
 def train(
-    n_obs=400,
+    n_obs=300,
     dt=0.005,
     t_max=2.5,
     dr_window=0.25,
-    epochs=30,
-    num_batches_per_epoch=200,
+    epochs=10,
+    num_batches_per_epoch=150,
     batch_size=32,
-    save_path="rdm_dr_approximator.keras",
+    save_path="rdm_dr_approximator1.keras",
 ):
     """Online SBI training: a fresh batch of (theta, simulated data) pairs is
     drawn every step directly from `simulator`, so there is no fixed

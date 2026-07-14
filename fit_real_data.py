@@ -50,6 +50,7 @@ def load_participant_data(csv_path=CSV_PATH):
 def fit_all_participants(approximator, participants, num_posterior_samples=2000):
     """Returns a dict: participant_id -> posterior_samples array of shape
     (num_posterior_samples, n_params)."""
+    from rdm_dr_simulator import PARAM_NAMES
     results = {}
     for pid, trials in participants.items():
         # BayesFlow's `sample` expects a batch dimension; here batch=1
@@ -57,9 +58,16 @@ def fit_all_participants(approximator, participants, num_posterior_samples=2000)
         conditions = {"trials": trials[None, :, :]}
         samples_dict = approximator.sample(conditions=conditions,
                                             num_samples=num_posterior_samples)
-        key = ("inference_variables" if "inference_variables" in samples_dict
-               else list(samples_dict.keys())[0])
-        samples = np.asarray(samples_dict[key])[0]  # (num_posterior_samples, n_params)
+        # BayesFlow inverts the adapter's `.concatenate(...)`, returning ONE
+        # array per parameter (keyed by PARAM_NAMES), each (1, num_samples, 1)
+        # -- NOT a single "inference_variables" array. Stack them back into
+        # (num_posterior_samples, n_params) in PARAM_NAMES order.
+        if "inference_variables" in samples_dict:
+            samples = np.asarray(samples_dict["inference_variables"])[0]
+        else:
+            cols = [np.asarray(samples_dict[name])[0].reshape(num_posterior_samples, -1)
+                    for name in PARAM_NAMES]
+            samples = np.concatenate(cols, axis=-1)  # (num_posterior_samples, n_params)
         results[pid] = samples
         print(f"Fitted {pid}: posterior means = "
               f"{dict(zip(['v_c', 'v_e', 'b', 'A', 't0'], samples.mean(axis=0).round(3)))}")
@@ -86,7 +94,7 @@ def summarize_posteriors(results, out_csv="posterior_summary.csv"):
 if __name__ == "__main__":
     import bayesflow as bf
 
-    approximator = bf.Approximator.load("rdm_dr_approximator.keras")
+    approximator = bf.approximators.Approximator.load("rdm_dr_approximator.keras")
     participants = load_participant_data(CSV_PATH)
     results = fit_all_participants(approximator, participants)
     summarize_posteriors(results)

@@ -236,7 +236,7 @@ pip install -r requirements.txt
 
 python3 sanity_checks.py                 # step 2 check (no BayesFlow needed)
 python3 run_pipeline.py train            # steps 2-4: train the amortized posterior
-python3 run_pipeline.py validate         # step 5: recovery / SBC / coverage
+python run_pipeline.py validate         # step 5: recovery / SBC / coverage
 # put your CSV at the path set in fit_real_data.CSV_PATH, then:
 python3 run_pipeline.py fit              # step 6: fit real participants
 python3 run_pipeline.py ppc              # step 7: PPC (edit __main__ to use real fit results)
